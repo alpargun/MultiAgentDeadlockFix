@@ -16,13 +16,16 @@ def smooth_global_path(path, num_points=100):
     and fits a B-spline curve through them to create a smooth, drivable trajectory.
     """
     clean_path = [path[0]]
-    # Remove duplicate or excessively close waypoints that cause spline calculation errors
+    
+    # Filter out duplicate or excessively close waypoints that cause matrix singularities
+    # in the SciPy spline interpolation function.
     for pt in path[1:]:
         if np.linalg.norm(pt - clean_path[-1]) > 0.05:
             clean_path.append(pt)
     clean_path = np.array(clean_path)
 
-    # Fallback for very short paths: Use simple linear interpolation instead of a cubic spline
+    # Fallback Mechanism: If the path is too short (3 points or less), a cubic spline (k=3)
+    # cannot mathematically be drawn. We default to simple linear interpolation instead.
     if len(clean_path) <= 3:
         dists = np.cumsum(np.linalg.norm(np.diff(clean_path, axis=0), axis=1))
         dists = np.insert(dists, 0, 0)
@@ -33,7 +36,8 @@ def smooth_global_path(path, num_points=100):
         sample_dists = np.linspace(0, dists[-1], num_points)
         return np.column_stack((fx(sample_dists), fy(sample_dists)))
 
-    # Standard B-spline smoothing (degree k=3)
+    # Standard B-spline smoothing: Generates a 3rd-degree (k=3) continuous curve
+    # sampled at exactly 'num_points' to provide dense waypoints for the local planner.
     tck, u = si.splprep([clean_path[:,0], clean_path[:,1]], s=2.0, k=3)
     u_new = np.linspace(0, 1.0, num_points)
     x_smooth, y_smooth = si.splev(u_new, tck)
@@ -43,6 +47,11 @@ def smooth_global_path(path, num_points=100):
 # 3. 2-MODE HYBRID APF (Pure State Machine)
 # ==========================================
 class TwoModeAPF:
+    """
+    A Hybrid Artificial Potential Field that governs the high-level decision making.
+    It evaluates environmental forces to detect deadlocks, and switches between a 
+    Stable Mode (Gradient Descent) and a Chaos Mode (Stochastic Symmetry Breaking).
+    """
     def __init__(self, k_att=2.0, k_rep_agent=5.0, k_rep_wall=8.0, r_base=0.8, kappa=0.5, deadlock_tol=0.2):
         # Force Coefficients
         self.k_att = k_att               # Attraction strength toward the goal
@@ -58,7 +67,7 @@ class TwoModeAPF:
         self.d_safe_wall = 0.6           # The physical size of the wall's repulsive forcefield
 
     def get_closest_point_on_rect(self, pos, rect):
-        """Calculates the nearest geometric point on an Axis-Aligned Bounding Box (AABB)"""
+        """Calculates the mathematically nearest geometric point on an Axis-Aligned Bounding Box (AABB)"""
         rx, ry, rw, rh = rect
         cx = np.clip(pos[0], rx, rx + rw)
         cy = np.clip(pos[1], ry, ry + rh)
@@ -72,24 +81,24 @@ class TwoModeAPF:
         # ---------------------------------------------------------
         # PHASE 1: ATTRACTION & PERFECT PARKING
         # ---------------------------------------------------------
-        # 1. Snap to 0 velocity if within minimal margin (anti-jitter)
-        if dist_to_goal < 0.05:
+        # 1. Snap to 0 velocity if within minimal margin (anti-jitter). 
+        # Increased to 0.15 to match the exact run_simulation snap threshold.
+        if dist_to_goal < 0.15:
             return np.zeros(2)
 
-        # 2. Linear damping: slow down as we approach the target to ensure smooth parking
+        # 2. Linear damping: slow down dynamically as we approach the target
+        # This acts as a kinematic brake to prevent overshooting the final coordinate.
         v_max = 1.5
         arrival_radius = 1.0
-        # If within 1.0m, velocity scales down linearly with distance
         target_speed = v_max * (dist_to_goal / arrival_radius) if dist_to_goal < arrival_radius else v_max
         
-        # Calculate standard attraction vector
         dir_target_norm = dir_target / dist_to_goal if dist_to_goal > 0 else np.zeros(2)
         v_att = dir_target_norm * target_speed
 
         # ---------------------------------------------------------
         # PHASE 2: HYPER-STIFF CUBIC REPULSION
         # ---------------------------------------------------------
-        # Calculate dynamic safety distance based on the agent's current speed
+        # Calculate dynamic safety distance based on the agent's previous step speed
         current_speed = 0.0
         if len(agent.history) > 1:
             current_speed = np.linalg.norm(agent.history[-1] - agent.history[-2]) / 0.5
@@ -97,7 +106,8 @@ class TwoModeAPF:
 
         v_rep = np.zeros(2)
         
-        # Agent-to-Agent Repulsion (Cubic formulation for hyper-stiffness)
+        # Agent-to-Agent Repulsion (Cubic formulation)
+        # Guarantees mathematical divergence (infinite repulsion) as agents approach collision.
         for other in other_agents:
             dist_ij = np.linalg.norm(p_i - other.pos)
             if 0.01 < dist_ij < dynamic_d_safe:
@@ -114,7 +124,7 @@ class TwoModeAPF:
 
         # --- THE "PARKING PANIC" FIX ---
         # Calculate theoretical progress using UN-DAMPED attraction.
-        # This isolates environmental resistance (walls/agents) from deliberate braking.
+        # This isolates environmental resistance (walls/agents) from deliberate parking brakes.
         v_att_undamped = dir_target_norm * v_max
         theoretical_forward_progress = np.dot(v_att_undamped + v_rep, dir_target_norm)
 
@@ -141,16 +151,17 @@ class TwoModeAPF:
         v_final = np.zeros(2)
 
         if agent.mode == 1:
-            # Stable Mode: Follow the APF field
+            # Mode 1 (Stable): Standard APF Gradient Tracking
             v_final = v_att + v_rep
         else:
-            # Chaos Mode: Add a strong random vector to break the symmetry
+            # Mode 2 (Chaos): Stochastic Symmetry Breaking
+            # Injects random directional velocity while maintaining wall repulsion safety
             agent.rand_angle += np.random.uniform(-0.5, 0.5)
             rand_mag = np.random.uniform(2.0, 4.0) 
             v_rand = np.array([np.cos(agent.rand_angle), np.sin(agent.rand_angle)]) * rand_mag
             v_final = v_rand + v_rep
             
-        # Ensure we never exceed our dynamically damped target speed
+        # Ensure we never exceed our dynamically damped target speed limit
         speed = np.linalg.norm(v_final)
         if speed > target_speed:
             v_final = (v_final / speed) * target_speed
@@ -177,23 +188,34 @@ class DynamicAgent:
 def get_current_target(agent):
     """
     Dynamic Lookahead Algorithm (Pure Pursuit style).
-    Prevents agents from trying to reverse if they get pushed off the path.
+    Always searches for the closest point on the global path relative to the agent's 
+    CURRENT physical position, then looks slightly ahead. This guarantees recovery 
+    even if Chaos Mode blasts the agent far away from its expected route.
     """
     dists = np.linalg.norm(agent.global_path - agent.pos, axis=1)
     closest_idx = np.argmin(dists)
     
-    # --- TIGHTER LOOKAHEAD ---
     # Ensure the agent tightly tracks the safe RRT* centerline
     # through the door and avoids cutting into the wall corners.
     target_idx = min(closest_idx + 3, len(agent.global_path) - 1)
     return agent.global_path[target_idx]
 
 def run_simulation():
-    # THE STRESS TEST: 1.5m Narrow Corridor
+    # 2m corridor
+    # obstacles = [
+    #     (4.8, 6.0, 0.4, 6.0),     
+    #     (4.8, -2.0, 0.4, 6.0),    
+    #     (-2.0, 11.0, 14.0, 0.5),  
+    #     (-2.0, -1.5, 14.0, 0.5),  
+    #     (-1.5, -1.5, 0.5, 13.0),  
+    #     (11.0, -1.5, 0.5, 13.0)   
+    # ]
+
+    # THE STRESS TEST: 1.5m Corridor
     obstacles = [
-        (4.8, 5.75, 0.4, 6.25),   # Top wall
-        (4.8, -2.0, 0.4, 6.25),   # Bottom wall
-        (-2.0, 11.0, 14.0, 0.5),  # Map boundaries
+        (4.8, 5.75, 0.4, 6.25),   # Top wall pulled down
+        (4.8, -2.0, 0.4, 6.25),   # Bottom wall pulled up
+        (-2.0, 11.0, 14.0, 0.5),  
         (-2.0, -1.5, 14.0, 0.5),  
         (-1.5, -1.5, 0.5, 13.0),  
         (11.0, -1.5, 0.5, 13.0)   
@@ -208,8 +230,9 @@ def run_simulation():
     # --- MINKOWSKI SUM ---
     robot_radius = 0.35 # Inflate obstacles based on robot's radius
     
-    # Artificially inflate the physical obstacles by the robot's radius
-    # so the global planner treats the robot as a 0-width point-mass.
+    # By strictly inflating the boundaries by the robot's physical radius, we convert 
+    # Physical Space into Configuration Space (C-Space). This forces the global planner 
+    # to naturally avoid corners without relying on arbitrary hardcoded buffers.
     rrt_obstacles = [
         (x - robot_radius, y - robot_radius, w + (2 * robot_radius), h + (2 * robot_radius)) 
         for (x, y, w, h) in obstacles
@@ -230,11 +253,12 @@ def run_simulation():
     
     # Simulation Receding Horizon Loop
     for step in range(800): 
+        
         # Evaluate if the entire system has reached its goal state
         all_parked = all(np.linalg.norm(a.pos - a.goal) <= 0.05 for a in agents)
         
         # --- EARLY TERMINATION TRIGGER ---
-        # Stop simulating if both agents reached their target positions.
+        # Stop simulating the moment both agents are perfectly parked at their targets.
         if all_parked:
             print(f"Simulation completed successfully! Both agents parked at step {step}.")
             break
@@ -242,30 +266,31 @@ def run_simulation():
         for i, agent in enumerate(agents):
             dist_to_final_goal = np.linalg.norm(agent.pos - agent.goal)
             
-            # Skip parked agents entirely to lock them mathematically in place
-            if dist_to_final_goal <= 0.05:
+            # --- ZENO'S PARADOX FIX (PERFECT SNAP) ---
+            # To prevent the asymptotic slowdown where the agent takes hundreds of steps 
+            # to cross the final 0.15m due to linear damping, we forcefully snap it to the goal.
+            # This perfectly resolves the "Lingering Simulation" issue.
+            if dist_to_final_goal <= 0.15:
+                agent.pos = agent.goal.copy() # Snap perfectly to the absolute coordinate
                 agent.history.append(agent.pos.copy())
                 agent.mode_history.append(1)
                 continue 
                 
+            # Keep ALL agents in the obstacle array. A parked agent represents a solid,
+            # unmoving physical robot that the remaining agents must navigate around.
             other_agents = [a for a in agents if a.id != agent.id]
+            
             target_wp = get_current_target(agent)
             
             # Calculate ideal APF force
             v_des = apf.get_desired_velocity(agent, target_wp, other_agents, obstacles)
             
-            # By-pass the B-spline entirely for perfect 0.0 margin zero-velocity stops
-            if np.linalg.norm(v_des) == 0:
-                agent.history.append(agent.pos.copy())
-                agent.mode_history.append(1)
-                continue
-                
             # Feed the APF velocity into the Tube B-Spline optimizer for collision-safe smoothing
             short_term_goal = agent.pos + (v_des * dt * 2.0) 
             planner = TubeBSplineShort(agent.pos, short_term_goal, obstacles)
             safe_traj = planner.plan()
             
-            # Extract the actual safe step from the B-spline path
+            # Extract the actual safe step from the B-spline path execution
             agent.pos = safe_traj[1] 
             agent.history.append(agent.pos.copy())
             agent.mode_history.append(agent.mode)
