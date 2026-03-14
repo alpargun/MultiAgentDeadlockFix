@@ -8,6 +8,13 @@ from rrt_bridge import RRTStarBridge
 from tube_bspline_short import TubeBSplineShort
 
 # ==========================================
+# GLOBAL CONFIGURATION
+# ==========================================
+# Single Source of Truth for robot physics to prevent hardcoding bugs
+ROBOT_RADIUS = 0.35    
+GOAL_TOLERANCE = 0.15  # Acceptable parking distance from exact goal coordinate
+
+# ==========================================
 # 2. RRT PATH SMOOTHER
 # ==========================================
 def smooth_global_path(path, num_points=100):
@@ -39,7 +46,7 @@ def smooth_global_path(path, num_points=100):
     # Standard B-spline smoothing: Generates a 3rd-degree (k=3) continuous curve
     # sampled at exactly 'num_points' to provide dense waypoints for the local planner.
     
-    # --- TIGHTER SPLINE SMOOTHING & ANCHORING ---
+    # TIGHTER SPLINE SMOOTHING & ANCHORING
     # Reduced s=2.0 to s=0.5 to prevent massive looping curves that overshoot the goal.
     tck, u = si.splprep([clean_path[:,0], clean_path[:,1]], s=0.5, k=3)
     u_new = np.linspace(0, 1.0, num_points)
@@ -51,7 +58,6 @@ def smooth_global_path(path, num_points=100):
     smoothed_path[0] = clean_path[0]
     smoothed_path[-1] = clean_path[-1]
     return smoothed_path
-    # -------------------------------------------------
 
 # ==========================================
 # 3. 2-MODE HYBRID APF (Pure State Machine)
@@ -62,14 +68,14 @@ class TwoModeAPF:
     It evaluates environmental forces to detect deadlocks, and switches between a 
     Stable Mode (Gradient Descent) and a Chaos Mode (Stochastic Symmetry Breaking).
     """
-    def __init__(self, k_att=2.0, k_rep_agent=5.0, k_rep_wall=8.0, r_base=0.8, kappa=0.5, deadlock_tol=0.2):
+    def __init__(self, k_att=2.0, k_rep_agent=5.0, k_rep_wall=8.0, r_base=ROBOT_RADIUS, kappa=0.5, deadlock_tol=0.2):
         # Force Coefficients
         self.k_att = k_att               # Attraction strength toward the goal
         self.k_rep_agent = k_rep_agent   # Repulsion strength from other agents
         self.k_rep_wall = k_rep_wall     # Repulsion strength from walls/obstacles
         
         # Dynamic Safety Tube parameters
-        self.r_base = r_base             # Base radius of the robot
+        self.r_base = r_base             # Base radius of the robot (tied to global config)
         self.kappa = kappa               # Velocity-dependent radius scaling factor
         
         # Deadlock Detection
@@ -86,16 +92,15 @@ class TwoModeAPF:
     def get_desired_velocity(self, agent, p_target, other_agents, obstacles):
         p_i = agent.pos
 
-        # --- DECOUPLE STEERING FROM BRAKING ---
+        # DECOUPLE STEERING FROM BRAKING
         # dist_to_final_goal strictly controls the brakes (distance to absolute final target)
         dist_to_final_goal = np.linalg.norm(agent.goal - p_i)
 
         # ---------------------------------------------------------
         # PHASE 1: ATTRACTION & PERFECT PARKING
         # ---------------------------------------------------------
-        # 1. Snap to 0 velocity if within minimal margin (anti-jitter). 
-        # Increased to 0.15 to match the exact run_simulation snap threshold.
-        if dist_to_final_goal < 0.15:
+        # 1. Engage brakes if within Goal Tolerance. No teleporting.
+        if dist_to_final_goal <= GOAL_TOLERANCE:
             return np.zeros(2)
 
         # 2. Linear damping: slow down dynamically as we approach the target
@@ -104,7 +109,7 @@ class TwoModeAPF:
         arrival_radius = 1.0
         target_speed = v_max * (dist_to_final_goal / arrival_radius) if dist_to_final_goal < arrival_radius else v_max
         
-        # --- TERMINAL GOAL PURSUIT ---
+        # TERMINAL GOAL PURSUIT
         # If safely through the corridor (within 1.5m), ignore the global path 
         # completely and lock steering onto the true goal. Stops jitter loops.
         if dist_to_final_goal < 1.5:
@@ -117,7 +122,6 @@ class TwoModeAPF:
         # Steer towards waypoint, but at the speed dictated by the final goal
         dir_target_norm = dir_to_waypoint / dist_to_waypoint if dist_to_waypoint > 0 else np.zeros(2)
         v_att = dir_target_norm * target_speed
-        # ----------------------------------
 
         # ---------------------------------------------------------
         # PHASE 2: HYPER-STIFF CUBIC REPULSION
@@ -146,7 +150,7 @@ class TwoModeAPF:
                 rep_mag = self.k_rep_wall * ((1.0/dist_wall - 1.0/self.d_safe_wall)**3) * (1.0/(dist_wall**2))
                 v_rep += rep_mag * ((p_i - closest_pt) / dist_wall)
 
-        # --- THE "PARKING PANIC" FIX ---
+        # THE "PARKING PANIC" FIX
         # Calculate theoretical progress using UN-DAMPED attraction.
         # This isolates environmental resistance (walls/agents) from deliberate parking brakes.
         v_att_undamped = dir_target_norm * v_max
@@ -162,7 +166,7 @@ class TwoModeAPF:
                 agent.rand_angle = np.random.uniform(0, 2 * np.pi) 
                 
         elif agent.mode == 2:
-            # --- BULLETPROOF HYSTERESIS ---
+            # BULLETPROOF HYSTERESIS
             # Max possible progress is 1.5. We demand > 1.4 to exit Chaos.
             # The agent MUST bounce until it is completely clear of the obstacle's
             # repulsive forcefield to prevent rapid ping-ponging at corners.
@@ -225,16 +229,6 @@ def get_current_target(agent):
     return agent.global_path[target_idx]
 
 def run_simulation():
-    # 2m corridor
-    # obstacles = [
-    #     (4.8, 6.0, 0.4, 6.0),     
-    #     (4.8, -2.0, 0.4, 6.0),    
-    #     (-2.0, 11.0, 14.0, 0.5),  
-    #     (-2.0, -1.5, 14.0, 0.5),  
-    #     (-1.5, -1.5, 0.5, 13.0),  
-    #     (11.0, -1.5, 0.5, 13.0)   
-    # ]
-
     # THE STRESS TEST: 1.5m Corridor
     obstacles = [
         (4.8, 5.75, 0.4, 6.25),   # Top wall pulled down
@@ -251,14 +245,9 @@ def run_simulation():
     
     print("Computing Initial RRT* Bridge Paths...")
 
-    # --- MINKOWSKI SUM ---
-    robot_radius = 0.35 # Inflate obstacles based on robot's radius
-    
-    # By strictly inflating the boundaries by the robot's physical radius, we convert 
-    # Physical Space into Configuration Space (C-Space). This forces the global planner 
-    # to naturally avoid corners without relying on arbitrary hardcoded buffers.
+    # MINKOWSKI SUM
     rrt_obstacles = [
-        (x - robot_radius, y - robot_radius, w + (2 * robot_radius), h + (2 * robot_radius)) 
+        (x - ROBOT_RADIUS, y - ROBOT_RADIUS, w + (2 * ROBOT_RADIUS), h + (2 * ROBOT_RADIUS)) 
         for (x, y, w, h) in obstacles
     ]
 
@@ -272,18 +261,18 @@ def run_simulation():
         a.global_path = smooth_global_path(raw_path, num_points=100)
 
     print("Running Background Simulation...")
-    apf = TwoModeAPF()
+    apf = TwoModeAPF(r_base=ROBOT_RADIUS) # Pass global robot physics here too
     dt = 0.5 
     
     # Simulation Receding Horizon Loop
     for step in range(800): 
         
-        # --- FIX: EXACT TERMINATION MATCH ---
-        # Evaluate if the entire system has reached its goal state exactly at 0.05m to
-        # match the 'Snap to Goal' threshold.
-        all_parked = all(np.linalg.norm(a.pos - a.goal) <= 0.05 for a in agents)
+        # EXACT TERMINATION MATCH
+        # Evaluate if the entire system has reached its goal state exactly at the 
+        # GOAL_TOLERANCE margin.
+        all_parked = all(np.linalg.norm(a.pos - a.goal) <= GOAL_TOLERANCE for a in agents)
         
-        # --- EARLY TERMINATION TRIGGER ---
+        # EARLY TERMINATION TRIGGER
         # Stop simulating the moment both agents are perfectly parked at their targets.
         if all_parked:
             print(f"Simulation completed successfully! Both agents parked at step {step}.")
@@ -292,12 +281,9 @@ def run_simulation():
         for i, agent in enumerate(agents):
             dist_to_final_goal = np.linalg.norm(agent.pos - agent.goal)
             
-            # --- ZENO'S PARADOX FIX (PERFECT SNAP) ---
-            # To prevent the asymptotic slowdown where the agent takes hundreds of steps 
-            # to cross the final 0.15m due to linear damping, we forcefully snap it to the goal.
-            # This perfectly resolves the "Lingering Simulation" issue.
-            if dist_to_final_goal <= 0.15:
-                agent.pos = agent.goal.copy() # Snap perfectly to the absolute coordinate
+            # If the robot is within tolerance, just engage the parking brake. 
+            # It retains its true kinematic coordinate without faking the position.
+            if dist_to_final_goal <= GOAL_TOLERANCE:
                 agent.history.append(agent.pos.copy())
                 agent.mode_history.append(1)
                 continue 
@@ -318,8 +304,9 @@ def run_simulation():
                 continue
                 
             # Feed the APF velocity into the Tube B-Spline optimizer for collision-safe smoothing
+            # Ensure the Tube uses the exact same physical radius!
             short_term_goal = agent.pos + (v_des * dt * 2.0) 
-            planner = TubeBSplineShort(agent.pos, short_term_goal, obstacles)
+            planner = TubeBSplineShort(agent.pos, short_term_goal, obstacles, r0=ROBOT_RADIUS)
             safe_traj = planner.plan()
             
             # Extract the actual safe step from the B-spline path execution
@@ -339,9 +326,9 @@ def run_simulation():
         ax.plot(a.global_path[:,0], a.global_path[:,1], color=a.color, linestyle=':', alpha=0.3)
         ax.scatter(a.history[0][0], a.history[0][1], marker='o', s=100, color=a.color, edgecolors='black', zorder=4)
         
-        # Draw the goal
+        # The star is drawn at `a.goal`
         ax.scatter(a.goal[0], a.goal[1], marker='*', s=300, color='yellow', edgecolors=a.color, linewidths=2, zorder=5)
-        
+
     ax.set_title("Stochastic Symmetry Breaking: 2-Mode Hybrid APF", fontsize=14)
     ax.set_xlim(-1.0, 11.0)
     ax.set_ylim(-1.0, 11.0)
@@ -372,7 +359,6 @@ def run_simulation():
         mode_text.set_text(f"Step: {frame} | Agent 1: {m1_str} | Agent 2: {m2_str}")
         return lines + heads + [mode_text]
 
-    # Calculate max frames based on where the simulation actually stopped
     max_frames = max(len(a.history) for a in agents)
     ani = FuncAnimation(fig, update, frames=max_frames, blit=False, interval=100, repeat=False)
     
