@@ -12,7 +12,7 @@ from tube_bspline_short import TubeBSplineShort
 # ==========================================
 # Single Source of Truth for robot physics to prevent hardcoding bugs
 ROBOT_RADIUS = 0.35    
-GOAL_TOLERANCE = 0.15  # Acceptable parking distance from exact goal coordinate
+GOAL_TOLERANCE = 0.05  # Acceptable parking distance from exact goal coordinate
 
 # ==========================================
 # 2. RRT PATH SMOOTHER
@@ -96,7 +96,7 @@ class TwoModeAPF:
         # dist_to_final_goal strictly controls the brakes (distance to absolute final target)
         dist_to_final_goal = np.linalg.norm(agent.goal - p_i)
 
-        # ---------------------------------------------------------
+        ## ---------------------------------------------------------
         # PHASE 1: ATTRACTION & PERFECT PARKING
         # ---------------------------------------------------------
         # 1. Engage brakes if within Goal Tolerance. No teleporting.
@@ -109,17 +109,14 @@ class TwoModeAPF:
         arrival_radius = 1.0
         target_speed = v_max * (dist_to_final_goal / arrival_radius) if dist_to_final_goal < arrival_radius else v_max
         
-        # TERMINAL GOAL PURSUIT
-        # If safely through the corridor (within 1.5m), ignore the global path 
-        # completely and lock steering onto the true goal. Stops jitter loops.
-        if dist_to_final_goal < 1.5:
-            dir_to_waypoint = agent.goal - p_i
-        else:
-            # Otherwise, steer toward the lookahead waypoint
-            dir_to_waypoint = p_target - p_i
-            
+        # 3. GENERALIZED STEERING (No Map-Specific Hardcoding)
+        # We always steer toward the lookahead waypoint (p_target). 
+        # Because the lookahead function clamps to the end of the array, 
+        # p_target naturally becomes the absolute goal at the end of the journey.
+        dir_to_waypoint = p_target - p_i
         dist_to_waypoint = np.linalg.norm(dir_to_waypoint)
-        # Steer towards waypoint, but at the speed dictated by the final goal
+        
+        # Steer towards waypoint at the speed dictated by the final goal distance
         dir_target_norm = dir_to_waypoint / dist_to_waypoint if dist_to_waypoint > 0 else np.zeros(2)
         v_att = dir_target_norm * target_speed
 
