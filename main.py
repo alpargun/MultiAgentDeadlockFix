@@ -38,10 +38,20 @@ def smooth_global_path(path, num_points=100):
 
     # Standard B-spline smoothing: Generates a 3rd-degree (k=3) continuous curve
     # sampled at exactly 'num_points' to provide dense waypoints for the local planner.
-    tck, u = si.splprep([clean_path[:,0], clean_path[:,1]], s=2.0, k=3)
+    
+    # --- TIGHTER SPLINE SMOOTHING & ANCHORING ---
+    # Reduced s=2.0 to s=0.5 to prevent massive looping curves that overshoot the goal.
+    tck, u = si.splprep([clean_path[:,0], clean_path[:,1]], s=0.5, k=3)
     u_new = np.linspace(0, 1.0, num_points)
     x_smooth, y_smooth = si.splev(u_new, tck)
-    return np.column_stack((x_smooth, y_smooth))
+    
+    smoothed_path = np.column_stack((x_smooth, y_smooth))
+    
+    # Anchor the first and last points to absolutely prevent 'Goal Drift'
+    smoothed_path[0] = clean_path[0]
+    smoothed_path[-1] = clean_path[-1]
+    return smoothed_path
+    # -------------------------------------------------
 
 # ==========================================
 # 3. 2-MODE HYBRID APF (Pure State Machine)
@@ -75,25 +85,39 @@ class TwoModeAPF:
 
     def get_desired_velocity(self, agent, p_target, other_agents, obstacles):
         p_i = agent.pos
-        dir_target = p_target - p_i
-        dist_to_goal = np.linalg.norm(dir_target)
+
+        # --- DECOUPLE STEERING FROM BRAKING ---
+        # dist_to_final_goal strictly controls the brakes (distance to absolute final target)
+        dist_to_final_goal = np.linalg.norm(agent.goal - p_i)
 
         # ---------------------------------------------------------
         # PHASE 1: ATTRACTION & PERFECT PARKING
         # ---------------------------------------------------------
         # 1. Snap to 0 velocity if within minimal margin (anti-jitter). 
         # Increased to 0.15 to match the exact run_simulation snap threshold.
-        if dist_to_goal < 0.15:
+        if dist_to_final_goal < 0.15:
             return np.zeros(2)
 
         # 2. Linear damping: slow down dynamically as we approach the target
         # This acts as a kinematic brake to prevent overshooting the final coordinate.
         v_max = 1.5
         arrival_radius = 1.0
-        target_speed = v_max * (dist_to_goal / arrival_radius) if dist_to_goal < arrival_radius else v_max
+        target_speed = v_max * (dist_to_final_goal / arrival_radius) if dist_to_final_goal < arrival_radius else v_max
         
-        dir_target_norm = dir_target / dist_to_goal if dist_to_goal > 0 else np.zeros(2)
+        # --- TERMINAL GOAL PURSUIT ---
+        # If safely through the corridor (within 1.5m), ignore the global path 
+        # completely and lock steering onto the true goal. Stops jitter loops.
+        if dist_to_final_goal < 1.5:
+            dir_to_waypoint = agent.goal - p_i
+        else:
+            # Otherwise, steer toward the lookahead waypoint
+            dir_to_waypoint = p_target - p_i
+            
+        dist_to_waypoint = np.linalg.norm(dir_to_waypoint)
+        # Steer towards waypoint, but at the speed dictated by the final goal
+        dir_target_norm = dir_to_waypoint / dist_to_waypoint if dist_to_waypoint > 0 else np.zeros(2)
         v_att = dir_target_norm * target_speed
+        # ----------------------------------
 
         # ---------------------------------------------------------
         # PHASE 2: HYPER-STIFF CUBIC REPULSION
@@ -254,7 +278,9 @@ def run_simulation():
     # Simulation Receding Horizon Loop
     for step in range(800): 
         
-        # Evaluate if the entire system has reached its goal state
+        # --- FIX: EXACT TERMINATION MATCH ---
+        # Evaluate if the entire system has reached its goal state exactly at 0.05m to
+        # match the 'Snap to Goal' threshold.
         all_parked = all(np.linalg.norm(a.pos - a.goal) <= 0.05 for a in agents)
         
         # --- EARLY TERMINATION TRIGGER ---
@@ -285,6 +311,12 @@ def run_simulation():
             # Calculate ideal APF force
             v_des = apf.get_desired_velocity(agent, target_wp, other_agents, obstacles)
             
+            # By-pass the B-spline entirely for perfect 0.0 margin zero-velocity stops
+            if np.linalg.norm(v_des) == 0:
+                agent.history.append(agent.pos.copy())
+                agent.mode_history.append(1)
+                continue
+                
             # Feed the APF velocity into the Tube B-Spline optimizer for collision-safe smoothing
             short_term_goal = agent.pos + (v_des * dt * 2.0) 
             planner = TubeBSplineShort(agent.pos, short_term_goal, obstacles)
@@ -307,9 +339,9 @@ def run_simulation():
         ax.plot(a.global_path[:,0], a.global_path[:,1], color=a.color, linestyle=':', alpha=0.3)
         ax.scatter(a.history[0][0], a.history[0][1], marker='o', s=100, color=a.color, edgecolors='black', zorder=4)
         
-        hist = np.array(a.history)
-        ax.scatter(hist[-1,0], hist[-1,1], marker='*', s=300, color='yellow', edgecolors=a.color, linewidths=2, zorder=5)
-
+        # Draw the goal
+        ax.scatter(a.goal[0], a.goal[1], marker='*', s=300, color='yellow', edgecolors=a.color, linewidths=2, zorder=5)
+        
     ax.set_title("Stochastic Symmetry Breaking: 2-Mode Hybrid APF", fontsize=14)
     ax.set_xlim(-1.0, 11.0)
     ax.set_ylim(-1.0, 11.0)
