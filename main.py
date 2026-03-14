@@ -3,7 +3,6 @@ import scipy.interpolate as si
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.animation import FuncAnimation
-from scipy.optimize import minimize
 
 from rrt_bridge import RRTStarBridge
 from tube_bspline_short import TubeBSplineShort
@@ -34,7 +33,7 @@ def smooth_global_path(path, num_points=100):
     return np.column_stack((x_smooth, y_smooth))
 
 # ==========================================
-# 3. 2-MODE HYBRID APF (Pure State Machine)
+# 3. 2-MODE HYBRID APF
 # ==========================================
 class TwoModeAPF:
     def __init__(self, k_att=2.0, k_rep_agent=5.0, k_rep_wall=8.0, r_base=0.8, kappa=0.5, deadlock_tol=0.2):
@@ -54,19 +53,27 @@ class TwoModeAPF:
 
     def get_desired_velocity(self, agent, p_target, other_agents, obstacles):
         p_i = agent.pos
+        dir_target = p_target - p_i
+        dist_to_goal = np.linalg.norm(dir_target)
 
+        # 1. Snap to 0 velocity if within minimal margin
+        if dist_to_goal < 0.05:
+            return np.zeros(2)
+
+        # 2. Linear damping: slow down as we approach the target
+        v_max = 1.5
+        arrival_radius = 1.0
+        target_speed = v_max * (dist_to_goal / arrival_radius) if dist_to_goal < arrival_radius else v_max
+        
+        dir_target_norm = dir_target / dist_to_goal if dist_to_goal > 0 else np.zeros(2)
+        v_att = dir_target_norm * target_speed
+
+        # 3. HYPER-STIFF CUBIC REPULSION
         current_speed = 0.0
         if len(agent.history) > 1:
             current_speed = np.linalg.norm(agent.history[-1] - agent.history[-2]) / 0.5
         dynamic_d_safe = self.r_base + (self.kappa * current_speed)
 
-        # 1. ATTRACTION
-        dir_target = p_target - p_i
-        dist_to_goal = np.linalg.norm(dir_target)
-        dir_target = dir_target / dist_to_goal if dist_to_goal > 0 else np.zeros(2)
-        v_att = dir_target * min(self.k_att * dist_to_goal, 2.0)
-
-        # 2. HYPER-STIFF CUBIC REPULSION
         v_rep = np.zeros(2)
         
         for other in other_agents:
@@ -82,11 +89,12 @@ class TwoModeAPF:
                 rep_mag = self.k_rep_wall * ((1.0/dist_wall - 1.0/self.d_safe_wall)**3) * (1.0/(dist_wall**2))
                 v_rep += rep_mag * ((p_i - closest_pt) / dist_wall)
 
-        # Project net forces onto goal vector to check if we are truly stuck mathematically
-        theoretical_forward_progress = np.dot(v_att + v_rep, dir_target)
+        # Calculate theoretical progress using UN-DAMPED attraction.
+        v_att_undamped = dir_target_norm * v_max
+        theoretical_forward_progress = np.dot(v_att_undamped + v_rep, dir_target_norm)
 
         # ---------------------------------------------------------
-        # 3. PURE GEOMETRIC STATE MACHINE
+        # PURE GEOMETRIC STATE MACHINE
         # ---------------------------------------------------------
         if agent.mode == 1:
             if theoretical_forward_progress < self.deadlock_tol:
@@ -94,11 +102,15 @@ class TwoModeAPF:
                 agent.rand_angle = np.random.uniform(0, 2 * np.pi) 
                 
         elif agent.mode == 2:
-            if theoretical_forward_progress > self.deadlock_tol + 0.1:
+            # --- CHANGED: BULLETPROOF HYSTERESIS ---
+            # Max possible progress is 1.5. We demand > 1.4 to exit Chaos.
+            # The agent MUST bounce until it is completely outside the wall's 
+            # 0.6m repulsive forcefield. No more ping-ponging!
+            if theoretical_forward_progress > 1.4:
                 agent.mode = 1
 
         # ---------------------------------------------------------
-        # 4. VELOCITY CALCULATION
+        # VELOCITY CALCULATION
         # ---------------------------------------------------------
         v_final = np.zeros(2)
 
@@ -111,8 +123,10 @@ class TwoModeAPF:
             v_final = v_rand + v_rep
             
         speed = np.linalg.norm(v_final)
-        if speed > 1.5:
-            v_final = (v_final / speed) * 1.5
+        
+        # Cap velocity to our damped target_speed to ensure smooth parking
+        if speed > target_speed:
+            v_final = (v_final / speed) * target_speed
 
         return v_final
 
@@ -136,24 +150,17 @@ class DynamicAgent:
 def get_current_target(agent):
     dists = np.linalg.norm(agent.global_path - agent.pos, axis=1)
     closest_idx = np.argmin(dists)
-    target_idx = min(closest_idx + 5, len(agent.global_path) - 1)
+    
+    # --- CHANGED: TIGHTER LOOKAHEAD ---
+    # Ensures the agent tightly tracks the safe RRT* centerline through the corridor and doesn't try to cut the corner.
+    target_idx = min(closest_idx + 3, len(agent.global_path) - 1)
     return agent.global_path[target_idx]
 
 def run_simulation():
-    # 2m corridor
-    # obstacles = [
-    #     (4.8, 6.0, 0.4, 6.0),     
-    #     (4.8, -2.0, 0.4, 6.0),    
-    #     (-2.0, 11.0, 14.0, 0.5),  
-    #     (-2.0, -1.5, 14.0, 0.5),  
-    #     (-1.5, -1.5, 0.5, 13.0),  
-    #     (11.0, -1.5, 0.5, 13.0)   
-    # ]
-
     # THE STRESS TEST: 1.5m Corridor
     obstacles = [
-        (4.8, 5.75, 0.4, 6.25),   # Top wall pulled down
-        (4.8, -2.0, 0.4, 6.25),   # Bottom wall pulled up
+        (4.8, 5.75, 0.4, 6.25),   
+        (4.8, -2.0, 0.4, 6.25),   
         (-2.0, 11.0, 14.0, 0.5),  
         (-2.0, -1.5, 14.0, 0.5),  
         (-1.5, -1.5, 0.5, 13.0),  
@@ -165,8 +172,18 @@ def run_simulation():
     agents = [a1, a2]
     
     print("Computing Initial RRT* Bridge Paths...")
+
+    # Minkowski Sum
+    robot_radius = 0.35 # Inflate obstacles based on robot's radius
+    
+    rrt_obstacles = [
+        (x - robot_radius, y - robot_radius, w + (2 * robot_radius), h + (2 * robot_radius)) 
+        for (x, y, w, h) in obstacles
+    ]
+
     for a in agents:
-        rrt = RRTStarBridge(a.pos, a.goal, obstacles, [-2, 12])
+        # Pass C-space obstacles to the global planner
+        rrt = RRTStarBridge(a.pos, a.goal, rrt_obstacles, [-2, 12])
         raw_path = rrt.plan()
         if raw_path is None:
             raw_path = np.array([a.pos, a.goal])
@@ -176,15 +193,18 @@ def run_simulation():
     apf = TwoModeAPF()
     dt = 0.5 
     
-    for step in range(600): 
-        active_agents = [a for a in agents if np.linalg.norm(a.pos - a.goal) >= 0.5]
+    for step in range(800): 
+        # Exclude parked agents so they don't block active ones
+        active_agents = [a for a in agents if np.linalg.norm(a.pos - a.goal) > 0.05]
         
         if len(active_agents) == 0:
             break
             
         for i, agent in enumerate(agents):
             dist_to_final_goal = np.linalg.norm(agent.pos - agent.goal)
-            if dist_to_final_goal < 0.01:
+            
+            # Skip parked agents entirely to lock them in place
+            if dist_to_final_goal <= 0.05:
                 agent.history.append(agent.pos.copy())
                 agent.mode_history.append(1)
                 continue 
@@ -193,8 +213,14 @@ def run_simulation():
             target_wp = get_current_target(agent)
             
             v_des = apf.get_desired_velocity(agent, target_wp, other_agents, obstacles)
-            short_term_goal = agent.pos + (v_des * dt * 2.0) 
             
+            # By-pass B-spline for perfect 0.0 margin zero-velocity stops
+            if np.linalg.norm(v_des) == 0:
+                agent.history.append(agent.pos.copy())
+                agent.mode_history.append(1)
+                continue
+                
+            short_term_goal = agent.pos + (v_des * dt * 2.0) 
             planner = TubeBSplineShort(agent.pos, short_term_goal, obstacles)
             safe_traj = planner.plan()
             
@@ -244,8 +270,7 @@ def run_simulation():
         return lines + heads + [mode_text]
 
     max_frames = max(len(a.history) for a in agents)
-    ani = FuncAnimation(fig, update, frames=max_frames, blit=False, interval=120, repeat=False)
-    ani.save('animation.mp4', writer='ffmpeg', fps=20)
+    ani = FuncAnimation(fig, update, frames=max_frames, blit=False, interval=100, repeat=False)
     
     plt.show()
 
