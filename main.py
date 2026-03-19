@@ -351,14 +351,15 @@ def run_simulation():
             lines[i].set_data(hist[:, 0], hist[:, 1])
             heads[i].set_data([hist[-1, 0]], [hist[-1, 1]])
 
-        m1_str = "Chaos" if agents[0].mode_history[frame] == 2 else "Stable"
-        m2_str = "Chaos" if agents[1].mode_history[frame] == 2 else "Stable"
-        mode_text.set_text(f"Step: {frame} | Agent 1: {m1_str} | Agent 2: {m2_str}")
+        # GENERALIZED TEXT RENDERER
+        mode_strs = [f"Agent {a.id}: {'Chaos' if a.mode_history[frame] == 2 else 'Stable'}" for a in agents]
+        mode_text.set_text(f"Step: {frame} | " + " | ".join(mode_strs))
         return lines + heads + [mode_text]
 
     max_frames = max(len(a.history) for a in agents)
     ani = FuncAnimation(fig, update, frames=max_frames, blit=False, interval=100, repeat=False)
-    
+    # Save the animation as mp4
+    ani.save('narrow_corridor_simulation.mp4', writer='ffmpeg', fps=20)
     plt.show()
 
 if __name__ == "__main__":
