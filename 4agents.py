@@ -363,7 +363,7 @@ def run_simulation():
     max_frames = max(len(a.history) for a in agents)
     ani = FuncAnimation(fig, update, frames=max_frames, blit=False, interval=100, repeat=False)
     # Save the animation as mp4
-    ani.save('4agents_simulation.mp4', writer='ffmpeg', fps=20)
+    ani.save('output/4agents_simulation.mp4', writer='ffmpeg', fps=20)
     plt.show()
 
     # ---------------------------------------------------------
@@ -384,7 +384,7 @@ def run_simulation():
     ax_error.legend()
     
     plt.tight_layout()
-    plt.savefig('distance_error_plot_4agents.png', dpi=300)
+    plt.savefig('output/distance_error_plot_4agents.png', dpi=300)
     # ---------------------------------------------------------
 
     plt.show()
