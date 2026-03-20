@@ -7,6 +7,8 @@ from matplotlib.animation import FuncAnimation
 from rrt_bridge import RRTStarBridge
 from tube_bspline_short import TubeBSplineShort
 
+np.random.seed(42)  # For reproducibility of random elements in the simulation
+
 # ==========================================
 # GLOBAL CONFIGURATION
 # ==========================================
@@ -375,6 +377,29 @@ def run_simulation():
     ani = FuncAnimation(fig, update, frames=max_frames, blit=False, interval=100, repeat=False)
     # Save the animation as mp4
     ani.save('maze_simulation.mp4', writer='ffmpeg', fps=20)
+    plt.show()
+
+    # ---------------------------------------------------------
+    # NEW: ERROR CONVERGENCE PLOT
+    # ---------------------------------------------------------
+    print("Rendering Error Plot...")
+    fig_error, ax_error = plt.subplots(figsize=(10, 5))
+    
+    for a in agents:
+        # Calculate the Euclidean distance from the agent's position to its goal at every step
+        distances = [np.linalg.norm(pos - a.goal) for pos in a.history]
+        ax_error.plot(range(len(distances)), distances, label=f'Agent {a.id}', color=a.color, lw=2)
+        
+    ax_error.set_title("Distance to Goal Over Time", fontsize=14, fontweight='bold')
+    ax_error.set_xlabel("Simulation Step", fontsize=12)
+    ax_error.set_ylabel("Distance to Goal (m)", fontsize=12)
+    ax_error.grid(True, linestyle='--', alpha=0.6)
+    ax_error.legend()
+    
+    plt.tight_layout()
+    plt.savefig('distance_error_plot_maze.png', dpi=300)
+    # ---------------------------------------------------------
+
     plt.show()
 
 if __name__ == "__main__":

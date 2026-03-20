@@ -2,6 +2,8 @@ import numpy as np
 import math
 import random
 
+random.seed(42)
+
 class Node:
     """
     Represents a single point (node) in the RRT* tree.
