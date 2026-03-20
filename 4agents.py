@@ -82,7 +82,7 @@ class TwoModeAPF:
         
         # Deadlock Detection
         self.deadlock_tol = deadlock_tol # Threshold for detecting a loss of forward progress
-        self.d_safe_wall = 0.6           # The physical size of the wall's repulsive forcefield
+        self.d_safe_wall = ROBOT_RADIUS + 0.05 # The physical size of the wall's repulsive forcefield
 
     def get_closest_point_on_rect(self, pos, rect):
         """Calculates the mathematically nearest geometric point on an Axis-Aligned Bounding Box (AABB)"""
