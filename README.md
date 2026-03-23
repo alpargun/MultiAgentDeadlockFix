@@ -9,7 +9,7 @@ Core pipeline:
 
 1. A global path is generated with sampling-based planning (RRT variants).
 2. The path is smoothed and followed using B-Splines.
-3. Artificial Potential Fields and Randomized Pushback Velocities are used to 
+3. Artificial Potential Fields and Randomized Pushback Velocities are used to guarantee collision-free deadlock resolutions
 4. 3 maps are included to demonstrate deadlock resolutions.
 5. Simulations are animated and saved for visual analysis.
 
