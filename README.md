@@ -60,5 +60,4 @@ multiAgentDeadlockFix/
 - `rrt_bridge.py`: RRT* + bridge sampling global planner for narrow-passage path generation.
 - `tube_bspline_short.py`: Local short-horizon B-spline tube planner with obstacle-aware constraints.
 - `plot_maps.py`: Utility script to render and save static map layouts.
-- `output/deadlock/`: Generated simulation outputs (videos/plots).
-- `output/maps/`: Generated map visualizations.
+- `output/`: Generated simulation outputs (videos/plots).
