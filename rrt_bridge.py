@@ -78,7 +78,7 @@ class RRTStarBridge:
             if not self.check_collision_point(x, y):
                 return Node(x, y)
 
-    def plan(self, max_iter=5000):
+    def plan(self, max_iter=1500):
         """Builds the tree and optimizes connections via RRT* rewiring."""
         self.node_list = [self.start]
         for i in range(max_iter):
