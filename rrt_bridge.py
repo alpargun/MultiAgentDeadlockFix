@@ -135,7 +135,9 @@ class RRTStarBridge:
     def find_near_nodes(self, new_node):
         """Finds all existing tree nodes within a dynamically shrinking search radius."""
         nnode = len(self.node_list) + 1
-        r = 5.0 * math.sqrt((math.log(nnode) / nnode)) 
+        # Floor the radius at the step size, otherwise it shrinks below expand_dis
+        # and every new node ends up with an empty neighbour set
+        r = max(5.0 * math.sqrt((math.log(nnode) / nnode)), 2.0 * self.expand_dis)
         return [i for i, n in enumerate(self.node_list) if (n.x - new_node.x)**2 + (n.y - new_node.y)**2 <= r**2]
         
     def choose_parent(self, new_node, near_inds):
