@@ -27,39 +27,44 @@ RRT_EXPAND_DIS = 0.5 # Branch segment length
 LOOKAHEAD_DIST = 0.8 # How far ahead on the global path the ODE's nominal point (P2) is placed
 APF_BASE_BUFFER = 0.05 # Minimum buffer around agents and walls at zero speed
 ODE_MAX_STEP = 0.1 # Maximum step size for the ODE solver (smaller = more accurate but slower)
+MIN_CLEAR_DIST = 0.01 # Floor on clearance so repulsion stays finite if bodies ever overlap
 
 # ======================================================================================================================
 # Global Path Tracking Function
 # ======================================================================================================================
 def get_lookahead_target(pos, path, lookahead=1.0):
     closest_dist = float('inf')
-    target_pt = path[-1]
-    
+    best_i, best_t = 0, 0.0
+
     for i in range(len(path) - 1):
-        seg_start = path[i]
-        seg_end = path[i+1]
-        
-        seg_vec = seg_end - seg_start
+        seg_vec = path[i+1] - path[i]
         seg_len = np.linalg.norm(seg_vec)
         if seg_len == 0: continue
         seg_dir = seg_vec / seg_len
-        
-        v = pos - seg_start
-        t = np.dot(v, seg_dir)
-        t_clamped = np.clip(t, 0, seg_len)
-        closest_pt_on_seg = seg_start + t_clamped * seg_dir
-        
-        dist_to_seg = np.linalg.norm(pos - closest_pt_on_seg)
-        
+
+        t_clamped = np.clip(np.dot(pos - path[i], seg_dir), 0, seg_len)
+        dist_to_seg = np.linalg.norm(pos - (path[i] + t_clamped * seg_dir))
+
         if dist_to_seg < closest_dist:
             closest_dist = dist_to_seg
-            t_target = np.clip(t_clamped + lookahead, 0, seg_len)
-            target_pt = seg_start + t_target * seg_dir
-            
-            if t_target == seg_len and i < len(path) - 2:
-                target_pt = path[i+1]
-                
-    return target_pt
+            best_i, best_t = i, t_clamped
+
+    # Walk the remaining arc length forward, spilling over into later segments
+    remaining = lookahead
+    i, t = best_i, best_t
+    while i < len(path) - 1:
+        seg_vec = path[i+1] - path[i]
+        seg_len = np.linalg.norm(seg_vec)
+        if seg_len == 0:
+            i += 1
+            continue
+        if t + remaining <= seg_len:
+            return path[i] + (t + remaining) * (seg_vec / seg_len)
+        remaining -= (seg_len - t)
+        i += 1
+        t = 0.0
+
+    return path[-1]
 
 def get_closest_point_on_rect(pos, rect):
     rx, ry, rw, rh = rect
@@ -116,11 +121,14 @@ def continuous_multi_agent_dynamics(t, state_vector, agents, obstacles):
             if i == j: continue
             p_j = np.array([positions[j], positions_y[j]])
             dist_center_to_center = np.linalg.norm(p_i - p_j)
+            if dist_center_to_center < 1e-9: continue
             
             clear_dist = dist_center_to_center - (2.0 * ROBOT_RADIUS)
             
-            if 0.001 < clear_dist < dynamic_buffer:
-                rep_mag = 5.0 * ((1.0/clear_dist - 1.0/dynamic_buffer)**3) * (1.0/(clear_dist**2))
+            if clear_dist < dynamic_buffer:
+                # Floor the distance instead of skipping, so the barrier never switches off on contact
+                d = max(clear_dist, MIN_CLEAR_DIST)
+                rep_mag = 5.0 * ((1.0/d - 1.0/dynamic_buffer)**3) * (1.0/(d**2))
                 v_rep_agent += rep_mag * ((p_i - p_j) / dist_center_to_center)
                 
         for obs in obstacles:
@@ -130,9 +138,16 @@ def continuous_multi_agent_dynamics(t, state_vector, agents, obstacles):
             clear_dist_wall = dist_center_to_wall - ROBOT_RADIUS
             wall_buffer = APF_BASE_BUFFER + (0.2 * target_speed) 
             
-            if 0.001 < clear_dist_wall < wall_buffer:
-                rep_mag = 8.0 * ((1.0/clear_dist_wall - 1.0/wall_buffer)**3) * (1.0/(clear_dist_wall**2))
-                v_rep_wall += rep_mag * ((p_i - closest_pt) / dist_center_to_wall)
+            if clear_dist_wall < wall_buffer:
+                d = max(clear_dist_wall, MIN_CLEAR_DIST)
+                if dist_center_to_wall > 1e-9:
+                    n_hat = (p_i - closest_pt) / dist_center_to_wall
+                else:
+                    # Center is inside the rectangle, so push out along the rectangle center
+                    n_hat = p_i - np.array([obs[0] + obs[2]/2.0, obs[1] + obs[3]/2.0])
+                    n_hat = n_hat / max(np.linalg.norm(n_hat), 1e-9)
+                rep_mag = 8.0 * ((1.0/d - 1.0/wall_buffer)**3) * (1.0/(d**2))
+                v_rep_wall += rep_mag * n_hat
                 
         # ============================================================
         # SAFETY CLAMPS
@@ -177,8 +192,9 @@ def continuous_multi_agent_dynamics(t, state_vector, agents, obstacles):
         # Parameter 1: Theta adds the dynamic swirling motion
         theta = agent.random_base_angle + (agent.random_drift_rate * t)
         
-        # Parameter 2: Lambda oscillates the anchor point smoothly between 0.2 and 0.8
-        lambda_t = 0.5 + 0.3 * np.sin(agent.random_stretch_freq * t + agent.random_stretch_phase)
+        # Parameter 2: Lambda oscillates the anchor point, gated by W_i so that
+        # lambda -> 0.5 and the spline tangent collapses back onto v_att when free
+        lambda_t = 0.5 + 0.3 * W_i * np.sin(agent.random_stretch_freq * t + agent.random_stretch_phase)
         
         # Applying both parameters to shape the final evasion tangent
         P1_nominal = P0 + (dir_norm * (target_speed * lambda_t)) 
@@ -263,7 +279,7 @@ def run_continuous_simulation(scenario):
     ax.set_xlim(-1.0, 11.0)
     ax.set_ylim(-1.0, 11.0)
     ax.set_aspect('equal')
-    plt.grid(True, linestyle='--', alpha=0.6)
+    ax.grid(True, linestyle='--', alpha=0.6)
 
     mode_text = ax.text(0.5, 0.95, '', transform=ax.transAxes, ha='center', fontsize=12, bbox=dict(facecolor='white', alpha=0.8))
     
@@ -310,37 +326,12 @@ def run_continuous_simulation(scenario):
         mode_text.set_text(f"Time: {t_frames[frame_idx]:.2f}s | " + " | ".join(strs))
         return lines + physical_bodies + apf_bubbles + [mode_text]
 
-    ani = FuncAnimation(fig, update, frames=len(t_frames), blit=False, interval=50, repeat=False)
-    print("Displaying Animation... (Close the window to view the Error Plot)")
-    plt.show()
+    ani = FuncAnimation(fig, update, frames=len(t_frames), blit=False, interval=50, repeat=True)
 
     # ==================================================================================================================
-    # FIGURE 2: ERROR CONVERGENCE PLOT
-    # ==================================================================================================================
-    print("Calculating and Displaying Error Plot...")
-    fig_error, ax_error = plt.subplots(figsize=(10, 5))
-    
-    for i, a in enumerate(agents):
-        x_hist = y_frames[i*3]
-        y_hist = y_frames[i*3+1]
-        distances = [np.linalg.norm(np.array([x, y]) - a.goal) for x, y in zip(x_hist, y_hist)]
-        ax_error.plot(t_frames, distances, label=f'Agent {a.id}', color=a.color, lw=2)
-        
-    ax_error.set_title(f"Continuous Distance to Goal ({scenario.capitalize()})", fontsize=14, fontweight='bold')
-    ax_error.set_xlabel("Time (seconds)", fontsize=12)
-    ax_error.set_ylabel("Distance to Goal (m)", fontsize=12)
-    ax_error.grid(True, linestyle='--', alpha=0.6)
-    ax_error.legend()
-    
-    plt.tight_layout()
-    plt.show()
-
-    # ==================================================================================================================
-    # FIGURE 3: MINIMUM CLEARANCE VERIFICATION (Safety Proof Module)
+    # CLEARANCE DATA (Safety Proof Module)
     # ==================================================================================================================
     print("Calculating Minimum Clearance Data...")
-    fig_clearance, ax_clearance = plt.subplots(figsize=(10, 5))
-    
     min_agent_clearance_history = []
     min_wall_clearance_history = []
     
@@ -370,28 +361,45 @@ def run_continuous_simulation(scenario):
         min_agent_clearance_history.append(current_agent_clearance)
         min_wall_clearance_history.append(current_wall_clearance)
 
-    # Plot the clearance data
-    ax_clearance.plot(t_frames, min_agent_clearance_history, label='Min Agent-to-Agent Clearance', color='purple', lw=2)
-    ax_clearance.plot(t_frames, min_wall_clearance_history, label='Min Agent-to-Wall Clearance', color='orange', lw=2)
-    
-    # Draw the RED ZERO LINE (The Collision Boundary)
-    ax_clearance.axhline(0, color='red', linestyle='-', linewidth=2, label='CRITICAL COLLISION BOUNDARY (0.0m)')
-    
-    # Draw the APF Base Buffer line for visual reference
+    # ==================================================================================================================
+    # FIGURE 2: TIME SERIES (convergence, clearance, deadlock weight on a shared time axis)
+    # ==================================================================================================================
+    fig_ts, (ax_error, ax_clearance, ax_w) = plt.subplots(3, 1, figsize=(10, 8), sharex=True, constrained_layout=True)
+
+    # Panel 1: distance to goal
+    for i, a in enumerate(agents):
+        distances = [np.linalg.norm(np.array([x, y]) - a.goal) for x, y in zip(y_frames[i*3], y_frames[i*3+1])]
+        ax_error.plot(t_frames, distances, label=f'Agent {a.id}', color=a.color, lw=2)
+    ax_error.set_title(f"Continuous Distance to Goal ({scenario.capitalize()})", fontsize=13, fontweight='bold')
+    ax_error.set_ylabel("Distance to Goal (m)", fontsize=11)
+    ax_error.grid(True, linestyle='--', alpha=0.6)
+    ax_error.legend()
+
+    # Panel 2: minimum clearance
+    ax_clearance.plot(t_frames, min_agent_clearance_history, label='Min Agent-to-Agent', color='purple', lw=2)
+    ax_clearance.plot(t_frames, min_wall_clearance_history, label='Min Agent-to-Wall', color='orange', lw=2)
+    ax_clearance.axhline(0, color='red', linestyle='-', linewidth=2, label='COLLISION BOUNDARY (0.0m)')
     ax_clearance.axhline(APF_BASE_BUFFER, color='gray', linestyle='--', alpha=0.7, label=f'Base Buffer ({APF_BASE_BUFFER}m)')
-    
-    ax_clearance.set_title(f"Safety Verification: Minimum Clearance ({scenario.capitalize()})", fontsize=14, fontweight='bold')
-    ax_clearance.set_xlabel("Time (seconds)", fontsize=12)
-    ax_clearance.set_ylabel("Clearance Distance (m)", fontsize=12)
-    
-    # Dynamically scale the Y-axis to focus on the danger zone
+    ax_clearance.set_title("Safety Verification: Minimum Clearance", fontsize=13, fontweight='bold')
+    ax_clearance.set_ylabel("Clearance (m)", fontsize=11)
     min_y = min(min(min_agent_clearance_history), min(min_wall_clearance_history))
-    ax_clearance.set_ylim(min(-0.1, min_y - 0.1), 1.0) 
-    
+    ax_clearance.set_ylim(min(-0.1, min_y - 0.1), 1.0)
     ax_clearance.grid(True, linestyle='--', alpha=0.6)
-    ax_clearance.legend(loc='upper right')
-    
-    plt.tight_layout()
+    ax_clearance.legend(loc='upper right', fontsize=9)
+
+    # Panel 3: deadlock weight
+    for i, a in enumerate(agents):
+        ax_w.plot(t_frames, y_frames[i*3+2], label=f'Agent {a.id}', color=a.color, lw=2)
+    ax_w.axhline(0.5, color='gray', linestyle='--', alpha=0.7, label='W = 0.5')
+    ax_w.set_title("Deadlock Weight W(t)", fontsize=13, fontweight='bold')
+    ax_w.set_xlabel("Time (seconds)", fontsize=11)
+    ax_w.set_ylabel("Deadlock Weight", fontsize=11)
+    ax_w.set_ylim(-0.05, 1.05)
+    ax_w.grid(True, linestyle='--', alpha=0.6)
+    ax_w.legend(fontsize=9)
+
+
+    print("Displaying animation and time series...")
     plt.show()
     
     print(f"[{scenario.upper()}] Execution complete.")
