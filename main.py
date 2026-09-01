@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.animation import FuncAnimation
+import os
 from scipy.integrate import solve_ivp
 
 # Custom imports
@@ -17,7 +18,8 @@ np.random.seed(42)
 ROBOT_RADIUS = 0.35
 GOAL_TOLERANCE = 0.05 # Parking brake trigger radius
 V_MAX = 1.5 # Maximum speed
-T_MAX = 40.0 # Maximum simulation time
+T_MAX = 60.0 # Maximum simulation time
+GAP = 1.5 # Minimum gap between walls in the maze and corridor scenarios
 
 # RRT* parameters
 RRT_MAX_ITER = 2500
@@ -27,7 +29,9 @@ RRT_EXPAND_DIS = 0.5 # Branch segment length
 LOOKAHEAD_DIST = 0.8 # How far ahead on the global path the ODE's nominal point (P2) is placed
 APF_BASE_BUFFER = 0.05 # Minimum buffer around agents and walls at zero speed
 ODE_MAX_STEP = 0.1 # Maximum step size for the ODE solver (smaller = more accurate but slower)
-MIN_CLEAR_DIST = 0.01 # Floor on clearance so repulsion stays finite if bodies ever overlap
+MIN_CLEAR_DIST = 0.01 # Floor so repulsion stays finite on contact
+
+DIR_OUTPUT = "output"
 
 # ======================================================================================================================
 # Global Path Tracking Function
@@ -73,7 +77,7 @@ def get_closest_point_on_rect(pos, rect):
     return np.array([cx, cy])
 
 # ======================================================================================================================
-# CONTINUOUS-TIME DYNAMICS (ODE + B-SPLINE RPV)
+# CONTINUOUS-TIME DYNAMICS
 # ======================================================================================================================
 def continuous_multi_agent_dynamics(t, state_vector, agents, obstacles):
     num_agents = len(agents)
@@ -136,7 +140,7 @@ def continuous_multi_agent_dynamics(t, state_vector, agents, obstacles):
             dist_center_to_wall = np.linalg.norm(p_i - closest_pt)
             
             clear_dist_wall = dist_center_to_wall - ROBOT_RADIUS
-            wall_buffer = APF_BASE_BUFFER + (0.2 * target_speed) 
+            wall_buffer = APF_BASE_BUFFER + (0.2 * estimated_speed)
             
             if clear_dist_wall < wall_buffer:
                 d = max(clear_dist_wall, MIN_CLEAR_DIST)
@@ -152,9 +156,7 @@ def continuous_multi_agent_dynamics(t, state_vector, agents, obstacles):
         # ============================================================
         # SAFETY CLAMPS
         # ============================================================
-        # Force ceilings to guarantee robots bounce off each other.
-        # Wall (25.0) > Agent (15.0) > Evasion (3.0) > Attraction (1.5)
-        # 15.0 is 10x max speed, acting as an unbreakable physical barrier.
+        # Cap the repulsions so a near-contact spike can't blow up the integrator
         mag_agent = np.linalg.norm(v_rep_agent)
         if mag_agent > 15.0:
             v_rep_agent = (v_rep_agent / mag_agent) * 15.0
@@ -164,9 +166,9 @@ def continuous_multi_agent_dynamics(t, state_vector, agents, obstacles):
             v_rep_wall = (v_rep_wall / mag_wall) * 25.0
         
         # ============================================================
-        # DEADLOCK MITIGATION & LOCAL B-SPLINE RPV
+        # DEADLOCK WEIGHT
         # ============================================================
-        # Differential Deadlock Equation: Update deadlock weight (W_i) based on forward progress and proximity to goal
+        # W_i tracks how stalled the nominal law is, latching fast and releasing slowly
         v_nominal = v_att + v_rep_agent + v_rep_wall
         speed_nom = np.linalg.norm(v_nominal)
         if speed_nom > target_speed:
@@ -187,16 +189,16 @@ def continuous_multi_agent_dynamics(t, state_vector, agents, obstacles):
                 dW_dt = 3.0 * (W_target - W_i)   
             
         # ============================================================
-        # B-SPLINE with 2 parameters: Theta for swirling motion, Lambda for dynamic stretch
+        # ESCAPE PERTURBATION
         # ============================================================
-        # Parameter 1: Theta adds the dynamic swirling motion
-        theta = agent.random_base_angle + (agent.random_drift_rate * t)
+        # Push direction is held for one trial period, then redrawn if still stuck
+        k = min(int((t + agent.trial_offset) // agent.trial_period), len(agent.trial_angles) - 1)
+        theta = agent.trial_angles[k]
         
-        # Parameter 2: Lambda oscillates the anchor point, gated by W_i so that
-        # lambda -> 0.5 and the spline tangent collapses back onto v_att when free
+        # Stretch of the control point, gated by W_i so it collapses to v_att when free
         lambda_t = 0.5 + 0.3 * W_i * np.sin(agent.random_stretch_freq * t + agent.random_stretch_phase)
         
-        # Applying both parameters to shape the final evasion tangent
+        # Quadratic Bezier tangent at P0, shifted by the push while W_i > 0
         P1_nominal = P0 + (dir_norm * (target_speed * lambda_t)) 
         
         pull_vector = np.array([np.cos(theta), np.sin(theta)]) * 2.0 * W_i
@@ -218,13 +220,8 @@ def continuous_multi_agent_dynamics(t, state_vector, agents, obstacles):
 # ======================================================================================================================
 def run_continuous_simulation(scenario):
     
-    agents, obstacles = get_scenario(scenario)
+    agents, obstacles = get_scenario(scenario, gap=2.0)
     
-    # Inject the continuous oscillator parameters for the B-Spline lambda(t) stretch
-    for a in agents:
-        a.random_stretch_freq = np.random.uniform(0.5, 1.5)
-        a.random_stretch_phase = np.random.uniform(0, 2*np.pi)
-     
     print(f"Computing Exact RRT* Paths for '{scenario.upper()}'...")
     rrt_obstacles = [(x - ROBOT_RADIUS, y - ROBOT_RADIUS, w + (2 * ROBOT_RADIUS), h + (2 * ROBOT_RADIUS)) for (x, y, w, h) in obstacles]
 
@@ -275,7 +272,7 @@ def run_continuous_simulation(scenario):
         ax.plot(a.global_path[:,0], a.global_path[:,1], color=a.color, linestyle=':', alpha=0.5, lw=2)
         ax.scatter(a.goal[0], a.goal[1], marker='*', s=300, color='yellow', edgecolors=a.color, zorder=5)
 
-    ax.set_title(f"Continuous ODE (B-Spline RPV) - {scenario.capitalize()}", fontsize=14)
+    ax.set_title(f"Continuous ODE - {scenario.capitalize()}", fontsize=14)
     ax.set_xlim(-1.0, 11.0)
     ax.set_ylim(-1.0, 11.0)
     ax.set_aspect('equal')
@@ -327,6 +324,9 @@ def run_continuous_simulation(scenario):
         return lines + physical_bodies + apf_bubbles + [mode_text]
 
     ani = FuncAnimation(fig, update, frames=len(t_frames), blit=False, interval=50, repeat=True)
+    os.makedirs(DIR_OUTPUT, exist_ok=True)
+    print("Saving animation...")
+    ani.save(f"{DIR_OUTPUT}/{scenario}.mp4", writer="ffmpeg", fps=20, dpi=150)
 
     # ==================================================================================================================
     # CLEARANCE DATA (Safety Proof Module)
@@ -378,12 +378,11 @@ def run_continuous_simulation(scenario):
     # Panel 2: minimum clearance
     ax_clearance.plot(t_frames, min_agent_clearance_history, label='Min Agent-to-Agent', color='purple', lw=2)
     ax_clearance.plot(t_frames, min_wall_clearance_history, label='Min Agent-to-Wall', color='orange', lw=2)
-    ax_clearance.axhline(0, color='red', linestyle='-', linewidth=2, label='COLLISION BOUNDARY (0.0m)')
-    ax_clearance.axhline(APF_BASE_BUFFER, color='gray', linestyle='--', alpha=0.7, label=f'Base Buffer ({APF_BASE_BUFFER}m)')
     ax_clearance.set_title("Safety Verification: Minimum Clearance", fontsize=13, fontweight='bold')
     ax_clearance.set_ylabel("Clearance (m)", fontsize=11)
-    min_y = min(min(min_agent_clearance_history), min(min_wall_clearance_history))
-    ax_clearance.set_ylim(min(-0.1, min_y - 0.1), 1.0)
+    ax_clearance.set_yscale('log')
+    ax_clearance.axhline(APF_BASE_BUFFER, color='gray', linestyle='--', alpha=0.7, label=f'Base Buffer ({APF_BASE_BUFFER}m)')
+    ax_clearance.set_ylim(0.02, 20.0)
     ax_clearance.grid(True, linestyle='--', alpha=0.6)
     ax_clearance.legend(loc='upper right', fontsize=9)
 
@@ -397,7 +396,7 @@ def run_continuous_simulation(scenario):
     ax_w.set_ylim(-0.05, 1.05)
     ax_w.grid(True, linestyle='--', alpha=0.6)
     ax_w.legend(fontsize=9)
-
+    fig_ts.savefig(f"{DIR_OUTPUT}/timeseries_{scenario}.png", dpi=200)
 
     print("Displaying animation and time series...")
     plt.show()
