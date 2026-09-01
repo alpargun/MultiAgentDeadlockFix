@@ -8,13 +8,13 @@ intersections with no communication, no IDs, and no priority rules.
 Each agent has state `[x, y, W]`, where `W` is a deadlock weight. All agents are integrated together
 as one ODE with `scipy.integrate.solve_ivp`.
 
-* **Global path.** RRT* with bridge sampling, which samples pairs of points inside obstacles and
+* **Global path:** RRT* with bridge sampling, which samples pairs of points inside obstacles and
 keeps the midpoint if it is free to find narrow gaps that uniform sampling misses.
 
-* **Local tracking.** Artificial potential field (APF). Each agent's safety bubble depends only on its own
+* **Local tracking:** Artificial potential field (APF). Each agent's safety bubble depends only on its own
 speed, from 5 cm when stopped to 50 cm at full speed.
 
-* **Deadlock.** `W` rises when forward progress along the path stalls and decays when it resumes.
+* **Deadlock:** `W` rises when forward progress along the path stalls and decays when it resumes.
 While `W` is high, a random perturbation is added to the spline tangent, held for a trial period, and 
 resampled if the agent is still stuck. The agent's safety bubble contracts in proportion to `W`. The 
 perturbation is scaled by `W` and vanishes once the agent is moving again. Symmetric deadlock breaks 
@@ -25,9 +25,6 @@ stuck agent **resolves the deadlock with one probability**.
 
 ## Demo
 
-Corridor and maze gaps are set by `get_scenario(name, gap=1.6)`. At 1.6 m two robots can't pass
-at full speed, so every run below needs the deadlock mechanism.
-
 ### Corridor
 
 <table>
@@ -37,7 +34,7 @@ at full speed, so every run below needs the deadlock mechanism.
 </tr>
 <tr>
 <td valign="middle" align="center">
-<video src="REPLACE_WITH_CORRIDOR_VIDEO_URL" controls="controls" width="100%"></video>
+<video src="https://github.com/user-attachments/assets/e7846f18-aa7c-4039-9e58-97d0449a3ab6" controls="controls" width="100%"></video>
 </td>
 <td valign="middle" align="center">
 <img src="output/timeseries_corridor.png" width="100%">
@@ -54,7 +51,7 @@ at full speed, so every run below needs the deadlock mechanism.
 </tr>
 <tr>
 <td valign="middle" align="center">
-<video src="REPLACE_WITH_MAZE_VIDEO_URL" controls="controls" width="100%"></video>
+<video src="https://github.com/user-attachments/assets/ce14da33-bf23-4dd5-9821-0c361475da01" controls="controls" width="100%"></video>
 </td>
 <td valign="middle" align="center">
 <img src="output/timeseries_maze.png" width="100%">
@@ -71,7 +68,7 @@ at full speed, so every run below needs the deadlock mechanism.
 </tr>
 <tr>
 <td valign="middle" align="center">
-<video src="REPLACE_WITH_INTERSECTION_VIDEO_URL" controls="controls" width="100%"></video>
+<video src="https://github.com/user-attachments/assets/abfd083b-56a3-477e-8b20-68bfdd924950" controls="controls" width="100%"></video>
 </td>
 <td valign="middle" align="center">
 <img src="output/timeseries_intersection.png" width="100%">
