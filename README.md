@@ -37,7 +37,7 @@ Four deadlock events per run, one of them three-way.
 </tr>
 <tr>
 <td valign="middle" align="center">
-<video src="REPLACE_WITH_WAREHOUSE_VIDEO_URL" controls="controls" width="100%"></video>
+<video src="https://github.com/user-attachments/assets/a27d72ce-6f72-408e-8c7b-8da69f3869ab" controls="controls" width="100%"></video>
 </td>
 <td valign="middle" align="center">
 <a href="output/timeseries_warehouse.png"><img src="output/timeseries_warehouse.png" width="100%"></a>
@@ -54,7 +54,7 @@ Four deadlock events per run, one of them three-way.
 </tr>
 <tr>
 <td valign="middle" align="center">
-<video src="https://github.com/user-attachments/assets/e7846f18-aa7c-4039-9e58-97d0449a3ab6" controls="controls" width="100%"></video>
+<video src="https://github.com/user-attachments/assets/d670fda7-f818-4211-89c1-498dd9f03888" controls="controls" width="100%"></video>
 </td>
 <td valign="middle" align="center">
 <a href="output/timeseries_corridor.png"><img src="output/timeseries_corridor.png" width="100%"></a>
@@ -71,7 +71,7 @@ Four deadlock events per run, one of them three-way.
 </tr>
 <tr>
 <td valign="middle" align="center">
-<video src="https://github.com/user-attachments/assets/ce14da33-bf23-4dd5-9821-0c361475da01" controls="controls" width="100%"></video>
+<video src="https://github.com/user-attachments/assets/a15c1c2e-7c1f-4177-b59c-d8efec0bbd20" controls="controls" width="100%"></video>
 </td>
 <td valign="middle" align="center">
 <a href="output/timeseries_maze.png"><img src="output/timeseries_maze.png" width="100%"></a>
@@ -88,7 +88,7 @@ Four deadlock events per run, one of them three-way.
 </tr>
 <tr>
 <td valign="middle" align="center">
-<video src="https://github.com/user-attachments/assets/abfd083b-56a3-477e-8b20-68bfdd924950" controls="controls" width="100%"></video>
+<video src="https://github.com/user-attachments/assets/8e4a7b9b-2109-4085-8ecc-77de2bbf0970" controls="controls" width="100%"></video>
 </td>
 <td valign="middle" align="center">
 <a href="output/timeseries_intersection.png"><img src="output/timeseries_intersection.png" width="100%"></a>
