@@ -1,7 +1,7 @@
 # Decentralized Deadlock-Free Multi-Agent Path Planning via Continuous-Time ODEs
 
-Decentralized multi-agent navigation in continuous time. Agents get through narrow corridors and
-intersections with no communication, no IDs, and no priority rules.
+Decentralized multi-agent navigation in continuous time. Agents get through corridors,
+intersections, and warehouse aisles with no communication, no IDs, and no priority rules.
 
 ## How it works
 
@@ -21,9 +21,29 @@ perturbation is scaled by `W` and vanishes once the agent is moving again. Symme
 through the randomized actions rather than through a rule.
 
 Because every agent draws its own parameters, two agents can't mirror each other forever, and a
-stuck agent **resolves the deadlock with one probability**.
+stuck agent escapes with probability one.
 
 ## Demo
+
+### Warehouse
+
+Four agents, two aisles joined only at the ends, each agent crossing from one aisle to the other.
+Four deadlock events per run, one of them three-way.
+
+<table>
+<tr>
+<th width="48%">Animation</th>
+<th width="52%">Convergence and safety metrics</th>
+</tr>
+<tr>
+<td valign="middle" align="center">
+<video src="REPLACE_WITH_WAREHOUSE_VIDEO_URL" controls="controls" width="100%"></video>
+</td>
+<td valign="middle" align="center">
+<a href="output/timeseries_warehouse.png"><img src="output/timeseries_warehouse.png" width="100%"></a>
+</td>
+</tr>
+</table>
 
 ### Corridor
 
@@ -82,6 +102,7 @@ stuck agent **resolves the deadlock with one probability**.
 python main.py --map corridor
 python main.py --map maze
 python main.py --map intersection
+python main.py --map warehouse
 ```
 
 Needs `numpy`, `scipy`, `matplotlib`.
