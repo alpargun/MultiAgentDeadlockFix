@@ -40,6 +40,22 @@ def get_scenario(scenario_name, gap=1.6):
             DynamicAgent(1, [0.0, 5.0], [10.0, 5.0], 'blue'),
             DynamicAgent(2, [10.0, 5.0], [0.0, 5.0], 'red')
         ]
+    # Warehouse: two aisles of width gap, joined only at the ends
+    elif scenario_name == "warehouse":
+        h = 1.8
+        y0, y1, y2 = 1.0, 1.0 + h + gap, 1.0 + 2*(h + gap)
+        obstacles = [
+            (1.0, y0, 8.0, h), (1.0, y1, 8.0, h), (1.0, y2, 8.0, h),
+            (-2.0, 11.0, 14.0, 0.5), (-2.0, -1.5, 14.0, 0.5),
+            (-1.5, -1.5, 0.5, 13.0), (11.0, -1.5, 0.5, 13.0)
+        ]
+        a_y, b_y = y0 + h + gap/2, y1 + h + gap/2
+        agents = [
+            DynamicAgent(1, [0.0, a_y], [10.0, b_y], 'blue'),
+            DynamicAgent(2, [10.0, a_y], [0.0, b_y], 'red'),
+            DynamicAgent(3, [0.0, b_y], [10.0, a_y], 'green'),
+            DynamicAgent(4, [10.0, b_y], [0.0, a_y], 'purple')
+        ]
     # Intersection
     else:
         obstacles = [

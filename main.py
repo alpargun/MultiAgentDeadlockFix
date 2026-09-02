@@ -18,8 +18,8 @@ np.random.seed(42)
 ROBOT_RADIUS = 0.35
 GOAL_TOLERANCE = 0.05 # Parking brake trigger radius
 V_MAX = 1.5 # Maximum speed
-T_MAX = 60.0 # Maximum simulation time
-GAP = 1.5 # Minimum gap between walls in the maze and corridor scenarios
+T_MAX = 90.0 # Maximum simulation time
+GAP = 1.6 # Minimum gap between walls in the maze and corridor scenarios
 
 # RRT* parameters
 RRT_MAX_ITER = 2500
@@ -166,29 +166,6 @@ def continuous_multi_agent_dynamics(t, state_vector, agents, obstacles):
             v_rep_wall = (v_rep_wall / mag_wall) * 25.0
         
         # ============================================================
-        # DEADLOCK WEIGHT
-        # ============================================================
-        # W_i tracks how stalled the nominal law is, latching fast and releasing slowly
-        v_nominal = v_att + v_rep_agent + v_rep_wall
-        speed_nom = np.linalg.norm(v_nominal)
-        if speed_nom > target_speed:
-            v_nominal = (v_nominal / speed_nom) * target_speed
-            
-        actual_forward_progress = np.dot(v_nominal, dir_norm)
-        
-        if dist_to_final_goal < 0.5:
-            W_target = 0.0
-            dW_dt = 10.0 * (W_target - W_i) 
-        else:
-            exponent = np.clip(15.0 * (actual_forward_progress - 0.2), -500, 500)
-            W_target = 1.0 / (1.0 + np.exp(exponent))
-        
-            if W_target > W_i:
-                dW_dt = 10.0 * (W_target - W_i)  
-            else:
-                dW_dt = 3.0 * (W_target - W_i)   
-            
-        # ============================================================
         # ESCAPE PERTURBATION
         # ============================================================
         # Push direction is held for one trial period, then redrawn if still stuck
@@ -210,7 +187,30 @@ def continuous_multi_agent_dynamics(t, state_vector, agents, obstacles):
         speed = np.linalg.norm(v_final)
         if speed > target_speed:
             v_final = (v_final / speed) * target_speed
-            
+
+        # ============================================================
+        # DEADLOCK WEIGHT
+        # ============================================================
+        # Progress of the nominal law toward the lookahead point; excludes the
+        # perturbation so W can't feed itself
+        v_nominal = v_att + v_rep_agent + v_rep_wall
+        speed_nom = np.linalg.norm(v_nominal)
+        if speed_nom > target_speed:
+            v_nominal = (v_nominal / speed_nom) * target_speed
+        actual_forward_progress = np.dot(v_nominal, dir_norm)
+
+        if dist_to_final_goal < 0.5:
+            W_target = 0.0
+            dW_dt = 10.0 * (W_target - W_i)
+        else:
+            exponent = np.clip(15.0 * (actual_forward_progress - 0.2), -500, 500)
+            W_target = 1.0 / (1.0 + np.exp(exponent))
+
+            if W_target > W_i:
+                dW_dt = 10.0 * (W_target - W_i)
+            else:
+                dW_dt = 3.0 * (W_target - W_i)
+
         dstate_dt[i*3 : i*3 + 3] = [v_final[0], v_final[1], dW_dt]
         
     return dstate_dt
@@ -220,7 +220,7 @@ def continuous_multi_agent_dynamics(t, state_vector, agents, obstacles):
 # ======================================================================================================================
 def run_continuous_simulation(scenario):
     
-    agents, obstacles = get_scenario(scenario, gap=2.0)
+    agents, obstacles = get_scenario(scenario, gap=GAP)
     
     print(f"Computing Exact RRT* Paths for '{scenario.upper()}'...")
     rrt_obstacles = [(x - ROBOT_RADIUS, y - ROBOT_RADIUS, w + (2 * ROBOT_RADIUS), h + (2 * ROBOT_RADIUS)) for (x, y, w, h) in obstacles]
@@ -308,7 +308,6 @@ def run_continuous_simulation(scenario):
             dist_to_goal = np.linalg.norm(np.array([hist_x[-1], hist_y[-1]]) - a.goal)
             target_speed = max(0.1, V_MAX * (dist_to_goal / 0.2)) if dist_to_goal < 0.2 else V_MAX
             
-            # Shrink the bubble when the ODE detects a deadlock (W_i > 0.5) to visually indicate the agent is in a high-deadlock state
             estimated_speed = target_speed * (1.0 - W_i)
             dynamic_buffer = APF_BASE_BUFFER + (0.3 * estimated_speed)
             apf_bubbles[i].set_radius(ROBOT_RADIUS + dynamic_buffer)
@@ -405,7 +404,7 @@ def run_continuous_simulation(scenario):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Multi-Agent Continuous APF Navigation")
-    parser.add_argument('--map', type=str, choices=['corridor', 'intersection', 'maze'], 
+    parser.add_argument('--map', type=str, choices=['corridor', 'intersection', 'maze', 'warehouse'], 
                         default='intersection', help="Select the map scenario to run.")
     args = parser.parse_args()
     
